@@ -1,0 +1,170 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import warnings
+
+# Ignore warnings from pandas and other libraries
+warnings.filterwarnings('ignore')
+
+# Data file name
+DATA_FILE = '미세먼지_PM10__월별_도시별_대기오염도_20250906111942.xlsx - 데이터.csv'
+
+# Data loading and preprocessing
+@st.cache_data
+def load_data():
+    """Loads and preprocesses data from the CSV file."""
+    try:
+        df = pd.read_csv(DATA_FILE, encoding='cp949', thousands=',')
+        
+        # Rename columns for clarity
+        df = df.rename(columns={'구분(1)': '시도', '구분(2)': '도시'})
+        
+        # Remove redundant rows where '시도' and '도시' are the same (e.g., '서울특별시', '서울특별시')
+        df = df[df['시도'] != df['도시']]
+        
+        # Remove summary rows ('소계', '전국')
+        df = df[df['도시'] != '소계']
+        df = df[df['도시'] != '전국']
+        
+        # Convert numeric columns to appropriate type, handling special characters
+        for col in df.columns[2:]:
+            # Use regex to remove '*' and ','
+            df[col] = df[col].astype(str).str.replace(r'[\*,]', '', regex=True)
+        
+        # Replace missing values and hyphens with 0
+        df = df.replace('-', pd.NA).fillna(0)
+        
+        # Convert all data columns to numeric
+        for col in df.columns[2:]:
+            df[col] = pd.to_numeric(df[col])
+            
+        return df
+
+    except FileNotFoundError:
+        st.error(f"'{DATA_FILE}' file not found. Please make sure the data file is in the same folder as app.py.")
+        return pd.DataFrame()
+
+# Streamlit app configuration
+st.set_page_config(
+    page_title="미세먼지(PM10) 월별 도시별 대기오염도",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for page padding
+st.markdown("""
+    <style>
+    .reportview-container .main .block-container {
+        padding-top: 2rem;
+        padding-right: 2rem;
+        padding-left: 2rem;
+        padding-bottom: 2rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Main title and description
+st.title("미세먼지(PM10) 월별 도시별 대기오염도")
+st.markdown("### 주요 도시별 미세먼지(PM10) 농도 데이터 시각화")
+
+# Load data
+df = load_data()
+
+if not df.empty:
+    # Sidebar for filtering
+    st.sidebar.header("필터 설정")
+    
+    # Select '시/도' (Province/City)
+    sido_list = sorted(df['시도'].unique().tolist())
+    selected_sido = st.sidebar.multiselect("시/도 선택", sido_list, default=sido_list)
+    
+    # Filtered data based on '시/도'
+    filtered_df = df[df['시도'].isin(selected_sido)]
+    
+    # Select '도시' (City)
+    city_list = sorted(filtered_df['도시'].unique().tolist())
+    selected_cities = st.sidebar.multiselect("도시 선택", city_list, default=city_list)
+    
+    filtered_df_cities = filtered_df[filtered_df['도시'].isin(selected_cities)]
+    
+    if not filtered_df_cities.empty:
+        # Display the filtered dataframe
+        st.subheader("원본 데이터")
+        st.dataframe(filtered_df_cities)
+        
+        # Select month for visualization
+        month_columns = df.columns[2:].tolist()
+        st.sidebar.subheader("데이터 시각화")
+        selected_month = st.sidebar.selectbox("월 선택", month_columns)
+        
+        # Bar chart for PM10 concentration
+        st.subheader(f"도시별 미세먼지(PM10) 농도: {selected_month}")
+        
+        # Sort dataframe for the bar chart
+        sorted_bar_df = filtered_df_cities.sort_values(by=selected_month, ascending=False)
+        fig_bar = px.bar(
+            sorted_bar_df,
+            x='도시',
+            y=selected_month,
+            color='시도',
+            title=f"{selected_month} 도시별 PM10 농도",
+            labels={'도시': '도시', selected_month: 'PM10 농도 (μg/m³)'},
+            template='plotly_white',
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+        
+        # Line chart for monthly PM10 trends
+        st.subheader("도시별 월간 미세먼지(PM10) 농도 변화")
+        
+        # Reshape data for the line chart
+        melted_df = filtered_df_cities.melt(
+            id_vars=['시도', '도시'],
+            value_vars=month_columns,
+            var_name='월',
+            value_name='PM10 농도'
+        )
+        
+        fig_line = px.line(
+            melted_df,
+            x='월',
+            y='PM10 농도',
+            color='도시',
+            line_group='도시',
+            title="도시별 월간 PM10 농도 변화",
+            labels={'월': '월', 'PM10 농도': 'PM10 농도 (μg/m³)'},
+            template='plotly_white',
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
+        
+        # Map visualization (simple example, not accurate as real coordinates are missing)
+        st.subheader("지도 시각화 (도시별 PM10 농도)")
+        st.info("이 지도는 도시 이름을 기반으로 대략적인 위치를 표시합니다. 실제 정확한 위치는 아닐 수 있습니다.")
+        
+        # Prepare data for map visualization
+        map_df = filtered_df_cities[['도시', selected_month]].copy()
+        fig_map = px.scatter_mapbox(
+            map_df,
+            lat=map_df['도시'].apply(lambda x: 37.5665),  # Use dummy latitude/longitude
+            lon=map_df['도시'].apply(lambda x: 126.9780),
+            hover_name="도시",
+            hover_data={selected_month: True, '도시': False},
+            color=selected_month,
+            zoom=5,
+            mapbox_style="carto-positron",
+            color_continuous_scale=px.colors.sequential.Viridis,
+            size=selected_month,
+            title="지도에 표시된 도시별 PM10 농도"
+        )
+        fig_map.update_traces(marker=dict(sizeref=0.2))
+        st.plotly_chart(fig_map, use_container_width=True)
+        
+    else:
+        st.warning("선택한 시/도 또는 도시에 해당하는 데이터가 없습니다. 다른 필터를 선택해 주세요.")
+
+# Data source information
+st.markdown("---")
+st.markdown("### 데이터 출처 및 정보")
+st.markdown("이 데이터는 한국환경공단(환경부)의 미세먼지(PM10) 월별 도시별 대기오염도 통계를 기반으로 합니다.")
+st.markdown("더 자세한 정보는 [KOSIS 국가통계포털](https://kosis.kr/)에서 확인하실 수 있습니다.")
+st.markdown("---")
+
